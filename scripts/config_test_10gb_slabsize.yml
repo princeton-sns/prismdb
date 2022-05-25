@@ -1,0 +1,33 @@
+# hardware config
+mem_alloc: [3221225472] #[1073741824] #21474836480
+cpu_alloc: [32]
+
+# first list all the config flags that need source compilation
+code: ["prismdb"]
+ssd: ["het"]
+optane_ratio: [0.23]
+pop_cache_size: [2200000]
+pop_cache_thresh: [0.7] #[0, 0.05, 0.1, 0.15, 0.20] #[0.01]
+blockcache_size: [0] #[200000000]
+num_partitions: [1] # [4, 8, 16]
+db_size: [2000000] #100000000
+key_size: [8]
+value_size: [980]
+
+# below config flags do not need source compilation
+num_clients: [1] #1
+loop: ["close"]
+workload: ["ycsb_slabs"]
+distribution: ["zipfian"] # deprecated
+distribution_param: [(0.8 -1)] #[(0.90 0), (0.80 0)] #[(0.99 0), (0.99 0.5), (0.99 0.8), (0.99 0.99)] # (read_dist_param  write_dist_param) 0 is uniform, -1 is both read and write use same distribution
+read_ratio: [0.5] # read/write ratio
+workload_operations: [2500000] #50000000
+warmup_ratio: [0.90]
+read_logging: [0] # 0 or 1
+migration_logging: [1] # 0 or 1
+migration_policy: [1] # 1 is oracle, 2 is random
+migration_rand_range_num: [1]
+migration_metric: [1]
+pop_file: [""]
+#pop_file: ["/home/ashwini/hetsys/pop/pop_10mdb_10mops_scrambled"]
+#pop_file: ["/home/ashwini/hetsys/pop/pop_10mdb_10mops_z0.8_scrambled"]

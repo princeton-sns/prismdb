@@ -1,0 +1,30 @@
+# hardware config
+mem_alloc: [4294967296]
+cpu_alloc: [16]
+
+# first list all the config flags that need source compilation
+code: ["rocksdb", "prismdb"]
+ssd: ["optane", "qlc", "het"]
+optane_ratio: [0.20]
+pop_cache_size: [0]
+pop_cache_thresh: [100.0]
+blockcache_size: [1073741824]
+num_partitions: [4]
+db_size: [8000000]
+key_size: [8]
+value_size: [1000]
+
+# below config flags do not need source compilation
+num_clients: [1]
+loop: ["open", "closed"]
+workload: ["ycsba", "ycsbb", "ycsbc", "ycsbd", "ycsbe", "ycsbf"]
+distribution: ["zipfian", "uniform", "latest"]
+distribution_param: [0.99]
+workload_operations: [10000000]
+warmup_ratio: [0.25]
+read_logging: [0] # 0 or 1
+migration_logging: [1] # 0 or 1
+migration_policy: [1] # 1 is oracle, 2 is random
+migration_rand_range_num: [1]
+migration_metric: [1]
+pop_file: ["/home/user/hetsys/pop/pop_8mdb_10mops"]
