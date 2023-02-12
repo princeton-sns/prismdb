@@ -49,7 +49,7 @@ Configure the experiment parameters in `scripts/config_test_example.yml` file
 
 Compile and run the experiment
   * On terminal, go to the scripts folder and run `sudo python3 run.py <experiment config file> <log folder name>`
-  * e.g. `sudo python3 config_test_example.yml ycsb_log`
+  * e.g. `sudo python3 run.py config_test_example.yml ycsb_log`
   * Logs for this experiment will get stored in `scripts/logs/ycsb_log` folder
   * Results are stored in `scripts/logs/ycsb_log/output.log`. Throughput and latency results can be extracted from the output.log
 
