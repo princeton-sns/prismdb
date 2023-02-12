@@ -55,7 +55,7 @@ Compile and run the experiment
 
 Throughput:
   * From the scripts folder run `./report.sh <output log path> <num_partitions>` 
-  * e.g. `./report.sh scripts/logs/ycsb_log/output.log 8` will print total throughput (kops/s) 
+  * e.g. `./report.sh scripts/logs/ycsb_log/<experiment_folder>/output.log 8` will print total throughput (kops/s) 
 
 Latency:
   * grep for "LATENCY HISTOGRAM" in `output.log`. It reports two instances - one for the loading phase and one for the running phase.
