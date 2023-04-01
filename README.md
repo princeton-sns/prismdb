@@ -1,4 +1,6 @@
-# PrismDB: Efficient Compactions Between Storage Tiers
+# Efficient Compactions Between Storage Tiers with PrismDB (ASPLOS 2023)
+
+This repository contains source code and instructions to reproduce key results in *Efficient Compactions between Storage Tiers with PrismDB* paper from **ASPLOS 2023**.
 
   * Contacts: Ashwini Raina (araina@cs.princeton.edu) and Jianan Lu (jiananl@princeton.edu)
 
@@ -74,5 +76,5 @@ Promotions need some time to take effect. Evaluation of read-heavy workloads (li
 
 
 # Paper
-  *  https://arxiv.org/abs/2008.02352
+  *  https://dl.acm.org/doi/10.1145/3582016.3582052
 
