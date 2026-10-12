@@ -72,7 +72,30 @@ Promotions need some time to take effect. Evaluation of read-heavy workloads (li
 
 # Limitations
 
-  * Delete(key) api is buggy 
+  * Deletion regression coverage includes point reads and successful tier
+    migrations. Range scans, snapshots, and restart recovery retain prototype
+    limitations outside this coverage.
+
+# Deletion Regression Tests
+
+Run these tests in an isolated Linux environment with the repository defaults.
+The fixture uses eight partitions and the slab directory configured in
+`db/nvm/options.h`. Create that directory first. The fixture refuses existing
+slab files and removes only the files it creates.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target prismdb_delete_test cache_test -j 4
+cd build
+ctest --output-on-failure -R '^(prismdb_delete_test|cache_test)$'
+```
+
+The tests check exact values across migration, repeated deletion, reinsertion,
+tombstones at migration boundaries, and deletion while migration is paused
+before cleanup. They use eight byte numeric keys and the existing point read
+API requirement that callers provide output storage. They do not measure
+Optane or flash performance, crash durability, or recovery after migration
+failure.
 
 
 # Paper

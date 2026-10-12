@@ -1822,6 +1822,7 @@ void DBImpl::SelectMigrationKeys(PartitionContext* p_ctx, std::vector<index_entr
   // Critical Section:
   auto begin_lock = high_resolution_clock::now();
   p_ctx->mtx.lock();
+  p_ctx->migration_bucket_counts_adjusted = false;
   auto end_lock = high_resolution_clock::now();
   index_scan keys;
   keys.nb_entries = 0;
@@ -1874,6 +1875,7 @@ void DBImpl::SelectMigrationKeys(PartitionContext* p_ctx, std::vector<index_entr
           keys = btree_find_between_metric2(p_ctx->index, &p_ctx->prev_migration_key, final_bound.first, final_bound.second, &pop_table_, popRank, (void*)(p_ctx->pop_cache_ptr), popThreshold, (void*) &updated_bucket_info, bucket_sz);
 
           UpdateBucketNumKeys(updated_bucket_info);
+          p_ctx->migration_bucket_counts_adjusted = keys.nb_entries != 0;
         } else if (options_.migration_metric == 6) {
           keys = btree_find_between(p_ctx->index, &p_ctx->prev_migration_key, final_bound.first, final_bound.second, &pop_table_, popRank, nullptr, popThreshold);
         } else {
@@ -1979,32 +1981,16 @@ void DBImpl::BackgroundCompaction(PartitionContext* p_ctx) {
   //mutex_.AssertHeld();
 
   // Step 2: Trigger background compaction to QLC
-  int total_mig_keys = migration_keys.size();
-  kv_pair smallest_kv, largest_kv;
-  //smallest_kv.buf = new char[4096];
-  //largest_kv.buf = new char[4096];
-  char small_buf [4096] = " ";
-  char large_buf [4096] = " ";
-  smallest_kv.buf = small_buf;
-  largest_kv.buf = large_buf;
-
-  //fprintf(stderr, "before read item key val\n");
-  read_item_key_val(p_ctx->slabContext, &migration_keys[0], &smallest_kv);
-  //fprintf(stderr, "after smallest read item key val\n");
-  read_item_key_val(p_ctx->slabContext, &migration_keys[total_mig_keys-1], &largest_kv);
-  //fprintf(stderr, "after largest read item key val\n");
-
-  // SM2
+  // The selected prefixes are complete eight-byte user keys, including for
+  // tombstones whose stored key_size is the deletion sentinel.
+  char smallest_key[sizeof(uint64_t)];
+  char largest_key[sizeof(uint64_t)];
+  encode_size64(smallest_key, migration_keys_prefix.front());
+  encode_size64(largest_key, migration_keys_prefix.back());
   p_ctx->mtx.unlock();
 
-  //EncodeFixed64(smallest_kv.buf[smallest_kv.key_size], (0 << 8) | kTypeValue);
-  //EncodeFixed64(smallest_kv.buf[smallest_kv.key_size], (0 << 8) | kTypeValue);
-
-  InternalKey smallest = InternalKey(Slice((const char*)smallest_kv.buf, smallest_kv.key_size),0, kTypeValue);
-  InternalKey largest = InternalKey(Slice((const char*)largest_kv.buf, largest_kv.key_size),0, kTypeValue);
-  //fprintf(stderr, "SMALL %s\n", smallest.Encode().ToString(true).c_str());
-  //fprintf(stderr, "LARGE %s\n", largest.Encode().ToString(true).c_str());
-  //fprintf(stderr, "%X\t Migration start key %s end key %s\n", std::this_thread::get_id(), smallest.user_key().ToString(true).c_str(), largest.user_key().ToString(true).c_str());
+  InternalKey smallest(Slice(smallest_key, sizeof(smallest_key)), 0, kTypeValue);
+  InternalKey largest(Slice(largest_key, sizeof(largest_key)), 0, kTypeValue);
 
   // create dummy sst metadata for migration keys
   FileMetaData dummy_mig_keys_file;
@@ -2129,6 +2115,7 @@ void DBImpl::BackgroundCompaction(PartitionContext* p_ctx) {
   //FREELIST : sort the freelist of each slab
   //fprintf(stderr, "FREELIST: before sort_all_slab_freelist\n");
   sort_all_slab_freelist(p_ctx->slabContext);
+  p_ctx->migration_bucket_counts_adjusted = false;
   fprintf(stderr, "FREELIST: after sort_all_slab_freelist\n");
 
   // DEBUG ONLY: print slabs free list
@@ -2427,6 +2414,7 @@ Status DBImpl::DoCompactionWork(PartitionContext* p_ctx, CompactionState* compac
     }
     Slice key;
     InternalKey iter_key;
+    InternalKey migration_internal_key;
     Slice mig_key;
     ParsedInternalKey p_mkey, p_ikey;
 
@@ -2461,7 +2449,9 @@ Status DBImpl::DoCompactionWork(PartitionContext* p_ctx, CompactionState* compac
         }
 	//fprintf(stderr, "optane_read_time-1 %llu\n", duration_cast<nanoseconds>(end_optane - begin_optane).count());
         //p_ctx->mig_compaction_read_optane += duration_cast<nanoseconds>(end_optane - begin_optane).count();
-        auto mig_user_key = Slice((const char*)kv.buf, kv.key_size); //kv.buf
+        const size_t user_key_size =
+            kv.key_size == static_cast<size_t>(-1) ? sizeof(uint64_t) : kv.key_size;
+        auto mig_user_key = Slice(kv.buf, user_key_size);
 
 	//auto s2 = high_resolution_clock::now();
         int comp = user_comparator()->Compare(mig_user_key, iter_key.user_key());
@@ -2484,8 +2474,9 @@ Status DBImpl::DoCompactionWork(PartitionContext* p_ctx, CompactionState* compac
         if (comp <= 0){
           // mig user key is smaller than iter key
           if (kv.key_size != -1){
-            (void)EncodeFixed64(&kv.buf[kv.key_size], ((0<<8) | kTypeValue));
-            key = Slice(kv.buf, kv.key_size+8);
+            migration_internal_key =
+                InternalKey(Slice(kv.buf, kv.key_size), 0, kTypeValue);
+            key = migration_internal_key.Encode();
             is_mig_key = true;
 
             // move the iterator forward if mig and iter user keys are same
@@ -2594,8 +2585,9 @@ Status DBImpl::DoCompactionWork(PartitionContext* p_ctx, CompactionState* compac
       //p_ctx->mig_compaction_read_optane += duration_cast<nanoseconds>(end_optane - begin_optane).count();
       if (kv.key_size != -1){
         //auto s11 = high_resolution_clock::now();
-        (void)EncodeFixed64(&kv.buf[kv.key_size], ((0<<8) | kTypeValue));
-        key = Slice(kv.buf, kv.key_size+8);
+        migration_internal_key =
+            InternalKey(Slice(kv.buf, kv.key_size), 0, kTypeValue);
+        key = migration_internal_key.Encode();
         //fprintf(stderr, "KV BUF KEY %s\n", key.ToString(true).c_str());
         is_mig_key = true;
         //fprintf(stderr, "picked mig key (iter not valid) key slice is %s key int is %llu\n", key.ToString(true).c_str(),  decode_size64((unsigned char *)kv.buf));
@@ -2604,7 +2596,7 @@ Status DBImpl::DoCompactionWork(PartitionContext* p_ctx, CompactionState* compac
       else {
         mig_key_idx++;
         total_mig_keys_deleted++;
-        fprintf(stderr, "DBG: dropped mig key %llu (kv.key_size == -1)\n", decode_size64((unsigned char*)(key.data())));
+        fprintf(stderr, "DBG: dropped mig key (kv.key_size == -1)\n");
         continue;
       }
     }
@@ -2897,11 +2889,9 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
     char *val_ptr = &(*value)[0];
     bool key_was_valid = read_item_val(partitions[p].slabContext, &e, val_ptr); // read value into val_char
 
-    // HACK for deleted keys, fix later
     if (!key_was_valid){
       partitions[p].mtx.unlock();
-      fprintf(stderr, "Invalid optane key, key size = -1!\n");
-      return s.OK();
+      return Status::NotFound(Slice());
     }
     //fprintf(stderr, "%X\tGET optane found key %s int_key %llu\n", std::this_thread::get_id(), key.ToString(true).c_str(), k);
 
@@ -3005,17 +2995,8 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
   //mutex_.Unlock();
   //auto end_qlc_unref_lock = high_resolution_clock::now();
 
-  if (!s.ok()){
-    //fprintf(stderr, "%X\tGET qlc NOT found key %s int_key %llu\n", std::this_thread::get_id(), key.ToString(true).c_str(), k);
-    //std::abort();
-    //int* aptr = nullptr;
-    // manual crash
-    //std::exit(1);
-    //if (*aptr == 5){ *aptr=10;}
-    return s.OK(); // maybe YCSB crashes on not ok status, so hack it to return OK
-  }
-  else {
-   //fprintf(stderr, "%X\t GET qlc found key %s int_key %llu\n", std::this_thread::get_id(), key.ToString(true).c_str(), k);
+  if (!s.ok()) {
+    return s;
   }
 
   if (popCacheSize > 0){
@@ -3638,7 +3619,7 @@ unsigned int DBImpl::GetFromMigrationBitmap(int pid, uint64_t k) {
 
 // Reset the partition's under_migration bitmap to be all zeros
 void DBImpl::ResetMigrationBitmap(int pid) {
-  memset(partitions[pid].under_migration_bitmap, (numKeys/numPartitions)/(sizeof(uint8_t)*8), 0);
+  memset(partitions[pid].under_migration_bitmap, 0, (numKeys/numPartitions)/(sizeof(uint8_t)*8));
 }
 
 Status DBImpl::PutImpl(const WriteOptions& opt, const Slice& key, const Slice& value, bool called_from_migration){
@@ -4019,92 +4000,67 @@ Status DB::Put(const WriteOptions& opt, const Slice& key, const Slice& value) {
 
 //PRISMDB
 Status DBImpl::DeleteImpl(const WriteOptions& opt, const Slice& key){
-  Status s;
-  //fprintf(stderr, "%s\n", "Delete");
-
-  // Step 1: find the partition for key
-  uint64_t k = decode_size64((unsigned char*)key.data());
-  int p = DBImpl::getPartition(k);
-  //fprintf(stderr, "key %d, partition %d\n", k, p);
-
-  // Critical Section:
+  const uint64_t k = decode_size64((unsigned char*)key.data());
+  const int p = DBImpl::getPartition(k);
   partitions[p].mtx.lock();
 
-  // Step 2: find index entry for the key
+  // Keep a keyed tombstone in the fast tier so an older lower-tier value
+  // cannot become visible before the deletion is migrated.
+  std::string item(sizeof(struct item_metadata) + key.size(), '\0');
+  EncodeFixed64(&item[0], partitions[p].sequenceNum++);
+  EncodeFixed64(&item[sizeof(size_t)], static_cast<size_t>(-1));
+  EncodeFixed64(&item[2 * sizeof(size_t)], 0);
+  memcpy(&item[sizeof(struct item_metadata)], key.data(), key.size());
+
   index_entry e;
-  int in_optane = btree_find(partitions[p].index, (unsigned char*) key.data(), key.size(), &e);
-
+  const bool in_optane =
+      btree_find(partitions[p].index, (unsigned char*)key.data(), key.size(), &e);
+  op_result result = {};
   if (in_optane) {
-    // Step 3.1: delete the key on optane
-    // Remove the item from optane and add its location to a per-slab freelist
-    //fprintf(stderr, "before calling remove_item_sync \n");
-    int success = remove_item_sync(partitions[p].slabContext, &e, load_phase_);
-    // Remove the item from optane index
-    btree_delete(partitions[p].index, (unsigned char*) key.data(), key.size(), false);
-    // Decrement the partition's total size in bytes
-    struct slab_new ** p_slabs = partitions[p].slabContext->slabs;
-    partitions[p].size_in_bytes -= p_slabs[e.slab]->item_size;
+    // Retain the slot even if migration has captured it. Reusing or freeing
+    // that slot would let the migration reader observe an unrelated record.
+    insert_item_at_idx(partitions[p].slabContext->slabs[e.slab], &item[0],
+                       item.size(), e.slab_idx, &result, load_phase_);
   } else {
-    // Step 3.2: delete a key on QLC (or might on QLC)
-    // Create a tombstone message whose metadata has key size of -1 and value size of 0
-    size_t key_sz = -1;
-    size_t val_sz = 0;
-    size_t item_size = sizeof(struct item_metadata);
-    char *item = new char[item_size];
-    if (item == NULL) {
-      fprintf(stderr, "create_item: malloc failed\n");
-    }
-    item_metadata *meta = (item_metadata *)item;
-    //meta->rdt = 0xC0FEC0FEC0FEC0FE;
-    meta->rdt = partitions[p].sequenceNum;
-    partitions[p].sequenceNum++;
-    meta->key_size = key_sz;
-    (void) EncodeFixed64(&item[sizeof(size_t)], key_sz);
-    meta->value_size = val_sz;
-    (void) EncodeFixed64(&item[2*sizeof(size_t)], val_sz);
-
-    // Add the tombstone message for this item on optane
-    op_result *res = new op_result;
-    add_item_sync(partitions[p].slabContext, item, item_size, res, load_phase_);
-    if (res->success == -1) {
-      fprintf(stderr, "%s\n", "delete() on qlc failed");
-      delete res;
-      delete item;
-      partitions[p].mtx.unlock();
-      return s.IOError("DeleteImpl() failed for QLC"); // return a error status
-    }
-
-    // Insert the item to optane index as if it is a valid item
-    int slab_id = res->slab_id;
-    index_entry new_e = {
-      (size_t)res->slab_idx, // object offset within this slab
-      slab_id,
-      item_size,
-    };
-    btree_insert(partitions[p].index, (unsigned char*) key.data(), key.size(), &new_e);
-
-    // Increment the partition's total size in bytes
-    partitions[p].size_in_bytes += partitions[p].slabContext->slabs[new_e.slab]->item_size;
-
-    delete res;
-    delete item;
+    add_item_sync(partitions[p].slabContext, &item[0], item.size(), &result,
+                  load_phase_);
+  }
+  if (result.success == -1) {
+    partitions[p].mtx.unlock();
+    return Status::IOError("DeleteImpl() failed");
   }
 
-  partitions[p].mtx.unlock();
-  return s.OK();
+  if (in_optane) {
+    btree_delete(partitions[p].index, (unsigned char*)key.data(), key.size(), false);
+  } else {
+    e.slab = result.slab_id;
+    e.slab_idx = result.slab_idx;
+    partitions[p].size_in_bytes +=
+        partitions[p].slabContext->slabs[e.slab]->item_size;
+    if (options_.migration_metric == 2 && !load_phase_) {
+      BucketList[k / bucket_sz].num_total_keys++;
+    }
+  }
+  e.item_size = item.size();
+  btree_insert(partitions[p].index, (unsigned char*)key.data(), key.size(), &e);
 
-  /*//fprintf(stderr, "Delete called\n");
-  Status s;
-  uint64_t sequence_num = versions_->LastSequence()+1;
-  InternalKey ikey = InternalKey(key, sequence_num, kTypeDeletion);
-  optane_mu.lock();
-  optane_map.erase(ikey.Encode().ToString());
-  // TODO: need to update the optane size correctly
-  //optane_size += key.size() + value.size();
-  optane_mu.unlock();
-  fprintf(stderr, "Delete called key %s seq %lu type %d optane_num_keys %d \n", key.ToString().c_str(), sequence_num, kTypeDeletion, optane_map.size());
-  versions_->SetLastSequence(sequence_num);
-  return s.OK();*/
+  // Cleanup for an earlier migration must leave this newer deletion indexed.
+  if (in_optane && partitions[p].migration_bucket_counts_adjusted &&
+      GetFromMigrationBitmap(p, k) != 0) {
+    // Metric two already deducted selected keys. This tombstone stays in the
+    // fast tier, so restore its count once before clearing the selection bit.
+    BucketList[k / bucket_sz].num_total_keys++;
+  }
+  SetMigrationBitmap(p, k, 0);
+  const bool needs_migration =
+      partitions[p].size_in_bytes >
+      (float)(maxDbSizeBytes * optaneThreshold *
+              partitions[p].migration_upper_bound / (float)numPartitions);
+  partitions[p].mtx.unlock();
+  if (needs_migration) {
+    MaybeScheduleCompaction(p);
+  }
+  return Status::OK();
 }
 
 Status DB::Delete(const WriteOptions& opt, const Slice& key) {
