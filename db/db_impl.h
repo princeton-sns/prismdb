@@ -310,6 +310,7 @@ class DBImpl : public DB {
 
  private:
   friend class DB;
+  friend class PrismDBDeleteTest;
   struct CompactionState;
   struct Writer;
 
@@ -370,6 +371,7 @@ class DBImpl : public DB {
     //int num_warmup_migrations = 50; // For Twitter
     int num_warmup_migrations = 0; // For YCSB
     uint8_t* under_migration_bitmap; // protected by partition lock
+    bool migration_bucket_counts_adjusted = false; // protected by partition lock
     std::mutex mtx;
     btree_t* index;
     slab_context_new* slabContext;

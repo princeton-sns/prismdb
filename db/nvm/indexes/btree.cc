@@ -3,8 +3,8 @@
 #include <map>
 #include <thread>
 
-#include "../../db/db_impl.h"
-#include "../../db/version_set.h"
+#include "db/db_impl.h"
+#include "db/version_set.h"
 
 using namespace std;
 using namespace btree;
