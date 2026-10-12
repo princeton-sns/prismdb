@@ -399,7 +399,8 @@ class ShardedLRUCache : public Cache {
   static uint32_t Shard(uint32_t hash) {
     // P2 HACK:
     //return hash;
-    return hash >> (32 - kNumShardBits); 
+    // Widen before shifting so the single-shard case can shift by 32 bits.
+    return static_cast<uint64_t>(hash) >> (32 - kNumShardBits);
   }
 
  public:
